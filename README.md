@@ -300,6 +300,20 @@ terraform destroy -var-file=env/dev.tfvars
     sepa en qué subred colocar las VMs.
   - `variables.tf`: Recibe los datos básicos: resource group, 
     location, prefix y tags.
- 
 
+--
+## PARTE II
+
+**Generar la llave SSH**: Para esto se ejecutó en la terminal el comando,
+```powershell
+ssh-keygen -t ed25519
+```
+y posteriormente se le dio *enter* a cada pregunta que se nos hizo. 
+
+**Obtener la dirección IPv4 de la máquina**: Se utilizó el siguiente comando,
+```powershell
+(Invoke-WebRequest -Uri "https://api4.ipify.org").Content
+```
+
+obteniendo `186.84.20.2`
 
