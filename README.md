@@ -220,3 +220,86 @@ terraform destroy -var-file=env/dev.tfvars
 
 ## Créditos y material de referencia
 - Azure, Terraform, IaC, LB y VMSS (docs oficiales) — revisa enlaces en clase.
+
+----
+# INFORME DE LABORATORIO
+
+**Autores**:
+- *Jacobo Diaz Alvarado*
+- *Santiago Carmona Pineda*
+---
+## PARTE I
+**Entendiendo la estructura**:
+
+`/infra`: 
+
+- `/env`: tiene un archivo llamado `dev.tfvars` que contiene el formulario de configuración de la infraestructura. Cada línea le dice a *Terraform* cómo se quiere crear la infraestructura.
+
+
+
+  - prefix -> Nombre de todos los recursos.
+  - location -> En qué datacenter de Azure se van a crear los recursos.
+  - vm_count -> Cuantas máquinas virtuales se quieren.
+  - admin_username -> El nombre del usuario con el que se conectará por SSH a las VMs.
+  - ssh_public_key -> Llave pública SSH que se instalará en las VMs
+  - allow_ssh_from_cidr -> Desde que *ip* se quiere hacer *SSH*
+  - tags -> etiquetas para organizar e identificar los recursos en Azure.
+
+- `backend.hcl.example`: Este archivo le dice a Terraform dónde guardar el estado remoto en Azure. 
+  - resource_group_name -> El Resource Group de Azure donde vivirá el Storage Account. 
+  - storage_account_name -> Disco duro en la nube.
+  - container_name -> Dentro del Storage Account hay "contenedores" .
+  - key -> El nombre del archivo dentro del contenedor. 
+
+
+  > Azure → Resource Group → Storage Account → Contenedor → Archivo
+
+- `cloud-init.yaml`: Este archivo es un script de arranque
+  - **#cloud-config**: Le dice al sistema que este archivo es un script de cloud-init. 
+  - **package_update**: Antes de instalar cualquier cosa, actualiza la lista de paquetes disponibles. 
+  - **packages: - nginx**: Instala nginx, que es el servidor web que responde cuando Load Balancer mande tráfico a la VM.
+  - **runcmd**: Todo lo que está debajo se ejecuta como comandos en la terminal
+- `main.tf`: Su trabajo es crear el Resource Group y luego llamar a los módulos pasándoles la información que necesitan.
+
+- `outputs.tf`: Son los valores que Terraform imprime cuando termina el apply.
+  - **lb_public_ip**: la IP pública del Load Balancer. 
+  - **resource_group_name**:  el nombre del Resource Group creado. 
+  - **vm_names**: los nombres de las VMs
+- `providers.tf`: Le dice a Terraform con qué herramientas trabajar y dónde guardar el estado.
+  - **required_version**: El Terraform instalado debe ser 1.6 o mayor.
+  - **required_providers**: Descarga el plugin de Azure (azurerm) versión 4.x. 
+
+  - **backend "azurerm" {}**: Significa que la configuración del backend vendrá desde afuera, del archivo backend.hcl que pasarás con -backend-config=backend.hcl.
+  - **provider "azurerm" { features {} }**: Inicializa el proveedor de Azure
+
+- `variables.tf`: Este archivo declara qué variables existen pero sin valores. 
+
+`/modules`:
+
+- `/compute`:
+  - `main.tf`: Crea las NICs y las VMs en Azure usando count para 
+    generar N copias. Instala nginx via cloud-init al arrancar.
+  - `outputs.tf`: Expone vm_names y nic_ids para que el módulo lb 
+    pueda asociar las NICs al backend pool.
+  - `variables.tf`: Recibe todo lo necesario para crear las VMs:
+    credenciales, subnet, cloud-init, cantidad de VMs y tags.
+
+- `/lb`:
+  - `main.tf`: Crea la IP pública, el Load Balancer, el backend pool, 
+    el health probe, la regla de balanceo y el NSG con sus reglas.
+  - `outputs.tf`: Expone public_ip para que infra/outputs.tf pueda 
+    mostrártela al final del apply.
+  - `variables.tf`: Recibe las NICs de las VMs, tu IP para SSH y 
+    los datos básicos del Resource Group.
+
+- `/vnet`:
+  - `main.tf`: Crea la Virtual Network (el edificio) y dos subnets 
+    dentro de ella: subnet-web para las VMs y subnet-mgmt para 
+    administración.
+  - `outputs.tf`: Expone subnet_web_id para que el módulo compute 
+    sepa en qué subred colocar las VMs.
+  - `variables.tf`: Recibe los datos básicos: resource group, 
+    location, prefix y tags.
+ 
+
+
