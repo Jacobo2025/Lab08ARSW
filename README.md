@@ -308,12 +308,42 @@ terraform destroy -var-file=env/dev.tfvars
 ```powershell
 ssh-keygen -t ed25519
 ```
-y posteriormente se le dio *enter* a cada pregunta que se nos hizo. 
+y posteriormente se le dio *enter* a cada pregunta que se nos hizo. La llave pública quedó guardada en `C:\Users\JACOBO\.ssh\id_ed25519.pub`.
 
 **Obtener la dirección IPv4 de la máquina**: Se utilizó el siguiente comando,
 ```powershell
 (Invoke-WebRequest -Uri "https://api4.ipify.org").Content
 ```
+obteniendo `186.84.20.2`. Esta IP se configuró en `dev.tfvars` como `allow_ssh_from_cidr = "186.84.20.2/32"` para restringir el acceso SSH únicamente desde esta máquina.
 
-obteniendo `186.84.20.2`
+**Instalación de herramientas**: Se instalaron Azure CLI y Terraform mediante winget:
+```powershell
+winget install Microsoft.AzureCLI
+winget install HashiCorp.Terraform
+```
+Versiones instaladas: Azure CLI 2.84.0 y Terraform v1.14.7.
+
+**Autenticación con Azure**: Se inició sesión con el comando `az login`, seleccionando la suscripción `Azure subscription 1` de la Escuela Colombiana de Ingeniería Julio Garavito.
+
+**Bootstrap del backend remoto**: Se crearon los recursos necesarios para almacenar el estado de Terraform en Azure:
+```powershell
+az group create -n rg-tfstate-lab8 -l eastus
+az storage account create -g rg-tfstate-lab8 -n sttfstate4076 -l eastus --sku Standard_LRS --encryption-services blob
+az storage container create --name tfstate --account-name sttfstate4076
+```
+Esto crea el Resource Group, el Storage Account `sttfstate4076` y el contenedor `tfstate` donde se guardará el archivo `terraform.tfstate`.
+
+**Configuración del backend**: Se creó el archivo `infra/backend.hcl` a partir del ejemplo del repositorio, completando el nombre único del Storage Account generado.
+
+**Inicialización de Terraform**:
+```powershell
+terraform init '-backend-config=backend.hcl'
+```
+Resultado: backend remoto conectado, módulos encontrados y provider de Azure v4.65.0 descargado exitosamente.
+
+**Validación del código**:
+```powershell
+terraform validate
+```
+Resultado: `Success! The configuration is valid.`
 

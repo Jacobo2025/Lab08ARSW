@@ -1,5 +1,5 @@
 prefix   = "lab8"
-location = "eastus"
+location = "westeurope"
 vm_count = 2
 admin_username = "student"
 ssh_public_key = "~/.ssh/id_ed25519.pub"
