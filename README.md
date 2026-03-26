@@ -304,46 +304,185 @@ terraform destroy -var-file=env/dev.tfvars
 --
 ## PARTE II
 
-**Generar la llave SSH**: Para esto se ejecutó en la terminal el comando,
-```powershell
-ssh-keygen -t ed25519
+### Paso 1 — Autenticación en Azure 
+
+Se inició sesión en Azure y se configuró la suscripción activa:
+
+```bash
+az login --tenant 50640584-2a40-4216-a84b-9b3ee0f3f6cf
+az account set --subscription 47ee3ece-e082-4a0a-8464-14d25467cf8e
+az account show --output table
 ```
-y posteriormente se le dio *enter* a cada pregunta que se nos hizo. La llave pública quedó guardada en `C:\Users\JACOBO\.ssh\id_ed25519.pub`.
 
-**Obtener la dirección IPv4 de la máquina**: Se utilizó el siguiente comando,
-```powershell
-(Invoke-WebRequest -Uri "https://api4.ipify.org").Content
+**Suscripción activa:** Azure for Students  
+**Tenant ID:** `50640584-2a40-4216-a84b-9b3ee0f3f6cf`  
+**Subscription ID:** `47ee3ece-e082-4a0a-8464-14d25467cf8e`
+ 
+---
+
+### Paso 2 — Bootstrap del backend remoto 
+
+Terraform necesita guardar su "estado" (la memoria de qué recursos creó) en un lugar seguro en la nube. Se creó un **Storage Account en Azure** para este propósito.
+
+#### Problemas encontrados y soluciones
+
+| Problema | Causa | Solución |
+|----------|-------|----------|
+| `SubscriptionNotFound` al crear Storage Account | Variables de shell perdidas entre sesiones | Redefinir variables en la misma sesión |
+| `RequestDisallowedByAzure` en `eastus` y `eastus2` | Azure for Students restringe regiones | Usar `brazilsouth` |
+| `Microsoft.Storage: NotRegistered` | Proveedor de Storage no habilitado | Registrar con `az provider register` |
+
+#### Comandos ejecutados
+
+```bash
+# Definición de variables
+SUFFIX=$RANDOM
+LOCATION=brazilsouth
+RG=rg-tfstate-lab8
+STO=sttfstate${SUFFIX}
+CONTAINER=tfstate
+ 
+# Registro del proveedor de Storage (solo se hace una vez)
+az provider register --namespace Microsoft.Storage \
+  --subscription 47ee3ece-e082-4a0a-8464-14d25467cf8e
+ 
+# Crear el Resource Group
+az group create -n $RG -l eastus2
+ 
+# Crear el Storage Account
+az storage account create \
+  -g $RG \
+  -n $STO \
+  -l $LOCATION \
+  --sku Standard_LRS \
+  --encryption-services blob
+ 
+# Crear el contenedor para el state
+az storage container create \
+  --name $CONTAINER \
+  --account-name $STO
 ```
-obteniendo `186.84.20.2`. Esta IP se configuró en `dev.tfvars` como `allow_ssh_from_cidr = "186.84.20.2/32"` para restringir el acceso SSH únicamente desde esta máquina.
 
-**Instalación de herramientas**: Se instalaron Azure CLI y Terraform mediante winget:
-```powershell
-winget install Microsoft.AzureCLI
-winget install HashiCorp.Terraform
+#### Recursos creados
+
+| Recurso | Nombre | Ubicación |
+|---------|--------|-----------|
+| Resource Group | `rg-tfstate-lab8` | `eastus2` |
+| Storage Account | `sttfstate18378` | `brazilsouth` |
+| Container | `tfstate` | — |
+
+> **Nota:** El Resource Group quedó en `eastus2` y el Storage Account en `brazilsouth`. Esto es válido — Azure permite que los recursos de un mismo Resource Group estén en distintas regiones.
+
+
+
+
+### Paso 3 — Preparación local y ajustes del código Terraform
+
+Con el backend remoto ya creado en Azure, se realizaron los siguientes ajustes en el repositorio antes de desplegar:
+
+#### 1) Reorganización del módulo `compute`
+
+Se separó la definición del módulo en tres archivos para mantener una estructura clara:
+
+- `modules/compute/main.tf`: solo recursos (NICs y VMs).
+- `modules/compute/variables.tf`: variables de entrada del módulo.
+- `modules/compute/outputs.tf`: outputs `vm_names` y `nic_ids`.
+
+Además, en `infra/main.tf` se actualizó la lectura de la llave SSH para que funcione en macOS/zsh con `~`:
+
+```terraform
+ssh_public_key = file(pathexpand(var.ssh_public_key))
 ```
-Versiones instaladas: Azure CLI 2.84.0 y Terraform v1.14.7.
 
-**Autenticación con Azure**: Se inició sesión con el comando `az login`, seleccionando la suscripción `Azure subscription 1` de la Escuela Colombiana de Ingeniería Julio Garavito.
+#### 2) Ajuste de variables de entorno (`dev.tfvars`)
 
-**Bootstrap del backend remoto**: Se crearon los recursos necesarios para almacenar el estado de Terraform en Azure:
-```powershell
-az group create -n rg-tfstate-lab8 -l eastus
-az storage account create -g rg-tfstate-lab8 -n sttfstate4076 -l eastus --sku Standard_LRS --encryption-services blob
-az storage container create --name tfstate --account-name sttfstate4076
+Se dejó `infra/env/dev.tfvars` con la configuración actual del laboratorio:
+
+```terraform
+prefix              = "lab8"
+location            = "eastus"
+vm_count            = 2
+admin_username      = "student"
+ssh_public_key      = "~/.ssh/id_ed25519.pub"
+allow_ssh_from_cidr = "190.158.204.58/32"
+tags                = { owner = "santiago", course = "ARSW/BluePrints", env = "dev", expires = "2026-12-31" }
 ```
-Esto crea el Resource Group, el Storage Account `sttfstate4076` y el contenedor `tfstate` donde se guardará el archivo `terraform.tfstate`.
 
-**Configuración del backend**: Se creó el archivo `infra/backend.hcl` a partir del ejemplo del repositorio, completando el nombre único del Storage Account generado.
+#### 3) Configuración de `backend.hcl`
 
-**Inicialización de Terraform**:
-```powershell
-terraform init '-backend-config=backend.hcl'
+Se creó `infra/backend.hcl` a partir de `infra/backend.hcl.example` y se completó con los datos reales del backend:
+
+```hcl
+resource_group_name  = "rg-tfstate-lab8"
+storage_account_name = "sttfstate18378"
+container_name       = "tfstate"
+key                  = "lab8/terraform.tfstate"
 ```
-Resultado: backend remoto conectado, módulos encontrados y provider de Azure v4.65.0 descargado exitosamente.
 
-**Validación del código**:
-```powershell
+Durante este paso se presentó un error `ResourceNotFound` porque el nombre del Storage Account estaba mal escrito (`sttfstate<sttfstate18378>`). Al corregirlo a `sttfstate18378`, la inicialización funcionó.
+
+#### 4) Validación inicial de Terraform
+
+Comandos ejecutados:
+
+```bash
+cd infra
+terraform fmt -recursive
+terraform init -backend=false
 terraform validate
 ```
-Resultado: `Success! The configuration is valid.`
+
+Resultado:
+
+```text
+Success! The configuration is valid.
+```
+
+#### 5) Inicialización contra backend remoto
+
+Comando ejecutado:
+
+```bash
+cd infra
+terraform init -backend-config=backend.hcl
+```
+
+Resultado: backend remoto `azurerm` configurado correctamente y módulos/proveedor inicializados.
+
+#### 6) Resolución del error de llave SSH
+
+Al ejecutar `terraform plan` apareció el error:
+
+```text
+no file exists at "/Users/santiagocarmonapineda/.ssh/id_ed25519.pub"
+```
+
+Causa: la ruta era válida, pero la llave aún no existía en la máquina. Se generó la llave con:
+
+```bash
+ssh-keygen -t ed25519 -C "lab8-terraform" -f "/Users/santiagocarmonapineda/.ssh/id_ed25519" -N ""
+```
+
+También se verificó la IP pública actual para la regla SSH:
+
+```bash
+curl -s https://api4.ipify.org
+```
+
+#### 7) Plan exitoso
+
+Comando final ejecutado:
+
+```bash
+cd infra
+terraform plan -var-file=env/dev.tfvars -out plan.tfplan
+```
+
+Resultado del plan:
+
+- `Plan: 18 to add, 0 to change, 0 to destroy`
+- Se generó el archivo `plan.tfplan` correctamente.
+- Outputs previstos: `lb_public_ip`, `resource_group_name`, `vm_names`.
+
+
 
