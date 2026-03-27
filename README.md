@@ -530,6 +530,29 @@ Se recomienda proteger el environment `dev` en GitHub con aprobacion manual ante
 
 ---
 
+## Diagrama de componentes
+![terraform_azure_component_diagram.drawio.png](img/terraform_azure_component_diagram.drawio.png)
+
+**Capa 1 — CI/CD Pipeline**
+Dos componentes conectados: Terraform Plan (corre en cada PR: fmt, validate, plan) y Terraform Apply (ejecución manual vía workflow_dispatch). Apply depende de Plan — el socket y lollipop entre ellos representan esa dependencia.
+
+**Capa 2 — IaC Layer (Módulos Terraform)**
+main.tf actúa como orquestador y llama a tres módulos: module::vnet (crea la red virtual y provee el subnet_web_id), module::compute (crea las VMs y provee los nic_ids) y module::lb (crea el Load Balancer consumiendo los nic_ids y exponiendo la public_ip). Las interfaces lollipop/socket entre módulos muestran qué provee cada uno y qué requiere el siguiente.
+
+**Capa 3 — Azure Cloud**
+Contiene todos los recursos desplegados: la VNet con sus dos subnets, el Load Balancer con IP pública estática, health probe TCP/80 y regla de balanceo 80→80, dos VMs (VM-0 y VM-1) corriendo nginx conectadas al LB via NIC-0 y NIC-1, el NSG que restringe el tráfico (HTTP 80 abierto, SSH 22 solo desde la IP autorizada), y el Storage Account usado como backend remoto para el estado de Terraform. El tráfico entra desde Internet al Load Balancer, que lo distribuye entre las dos VMs. GitHub Actions se autentica con Azure via OIDC y lee/escribe el estado remoto en el Storage Account.
+
+## Diagrama de secuencia
+![Diagrama de secuencia.png](img/Diagrama%20de%20secuencia.png)
+
+El diagrama muestra el flujo completo de una petición HTTP a través de la infraestructura de balanceo de carga.
+
+El Usuario envía una petición HTTP GET :80 al Load Balancer, que primero verifica la disponibilidad de las VMs mediante el health probe TCP/80.
+Dependiendo del resultado, el LB toma una de dos rutas (bloque Alternative):
+
+- Si VM-0 está disponible: reenvía la petición por NIC-0 hacia VM-0, que responde con "Hola desde lab8-vm-0".
+- Si VM-1 está disponible: reenvía la petición por NIC-1 hacia VM-1, que responde con "Hola desde lab8-vm-1".
+- En ambos casos el Load Balancer retorna un HTTP 200 OK al usuario, ocultando qué VM procesó la petición. Esto confirma que el balanceo de carga opera correctamente a nivel L4 (TCP), distribuyendo el tráfico entre las dos instancias de nginx según disponibilidad.
 
 ## Créditos y material de referencia
 - Azure, Terraform, IaC, LB y VMSS (docs oficiales) — revisa enlaces en clase.
