@@ -530,5 +530,6 @@ Se recomienda proteger el environment `dev` en GitHub con aprobacion manual ante
 
 ---
 
+
 ## Créditos y material de referencia
 - Azure, Terraform, IaC, LB y VMSS (docs oficiales) — revisa enlaces en clase.
