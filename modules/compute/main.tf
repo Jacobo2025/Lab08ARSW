@@ -17,7 +17,7 @@ resource "azurerm_linux_virtual_machine" "vm" {
   name                = "${var.prefix}-vm-${count.index}"
   location            = var.location
   resource_group_name = var.resource_group_name
-  size                = "Standard_D2as_v6"
+  size                = var.vm_size
 
   admin_username = var.admin_username
   network_interface_ids = [azurerm_network_interface.nic[count.index].id]
@@ -30,7 +30,7 @@ resource "azurerm_linux_virtual_machine" "vm" {
   source_image_reference {
     publisher = "Canonical"
     offer     = "0001-com-ubuntu-server-jammy"
-    sku       = "22_04-lts-gen2"
+    sku       = "22_04-lts"
     version   = "latest"
   }
 

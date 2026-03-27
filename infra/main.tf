@@ -22,6 +22,7 @@ module "compute" {
   ssh_public_key      = file(pathexpand(var.ssh_public_key))
   subnet_id           = module.vnet.subnet_web_id
   vm_count            = var.vm_count
+  vm_size             = var.vm_size
   cloud_init          = file("${path.module}/cloud-init.yaml")
   tags                = var.tags
 }
