@@ -220,3 +220,350 @@ terraform destroy -var-file=env/dev.tfvars
 
 ## Créditos y material de referencia
 - Azure, Terraform, IaC, LB y VMSS (docs oficiales) — revisa enlaces en clase.
+
+----
+# INFORME DE LABORATORIO
+
+**Autores**:
+- *Jacobo Diaz Alvarado*
+- *Santiago Carmona Pineda*
+---
+## PARTE I
+**Entendiendo la estructura**:
+
+`/infra`: 
+
+- `/env`: tiene un archivo llamado `dev.tfvars` que contiene el formulario de configuración de la infraestructura. Cada línea le dice a *Terraform* cómo se quiere crear la infraestructura.
+
+
+
+  - prefix -> Nombre de todos los recursos.
+  - location -> En qué datacenter de Azure se van a crear los recursos.
+  - vm_count -> Cuantas máquinas virtuales se quieren.
+  - admin_username -> El nombre del usuario con el que se conectará por SSH a las VMs.
+  - ssh_public_key -> Llave pública SSH que se instalará en las VMs
+  - allow_ssh_from_cidr -> Desde que *ip* se quiere hacer *SSH*
+  - tags -> etiquetas para organizar e identificar los recursos en Azure.
+
+- `backend.hcl.example`: Este archivo le dice a Terraform dónde guardar el estado remoto en Azure. 
+  - resource_group_name -> El Resource Group de Azure donde vivirá el Storage Account. 
+  - storage_account_name -> Disco duro en la nube.
+  - container_name -> Dentro del Storage Account hay "contenedores" .
+  - key -> El nombre del archivo dentro del contenedor. 
+
+
+  > Azure → Resource Group → Storage Account → Contenedor → Archivo
+
+- `cloud-init.yaml`: Este archivo es un script de arranque
+  - **#cloud-config**: Le dice al sistema que este archivo es un script de cloud-init. 
+  - **package_update**: Antes de instalar cualquier cosa, actualiza la lista de paquetes disponibles. 
+  - **packages: - nginx**: Instala nginx, que es el servidor web que responde cuando Load Balancer mande tráfico a la VM.
+  - **runcmd**: Todo lo que está debajo se ejecuta como comandos en la terminal
+- `main.tf`: Su trabajo es crear el Resource Group y luego llamar a los módulos pasándoles la información que necesitan.
+
+- `outputs.tf`: Son los valores que Terraform imprime cuando termina el apply.
+  - **lb_public_ip**: la IP pública del Load Balancer. 
+  - **resource_group_name**:  el nombre del Resource Group creado. 
+  - **vm_names**: los nombres de las VMs
+- `providers.tf`: Le dice a Terraform con qué herramientas trabajar y dónde guardar el estado.
+  - **required_version**: El Terraform instalado debe ser 1.6 o mayor.
+  - **required_providers**: Descarga el plugin de Azure (azurerm) versión 4.x. 
+
+  - **backend "azurerm" {}**: Significa que la configuración del backend vendrá desde afuera, del archivo backend.hcl que pasarás con -backend-config=backend.hcl.
+  - **provider "azurerm" { features {} }**: Inicializa el proveedor de Azure
+
+- `variables.tf`: Este archivo declara qué variables existen pero sin valores. 
+
+`/modules`:
+
+- `/compute`:
+  - `main.tf`: Crea las NICs y las VMs en Azure usando count para 
+    generar N copias. Instala nginx via cloud-init al arrancar.
+  - `outputs.tf`: Expone vm_names y nic_ids para que el módulo lb 
+    pueda asociar las NICs al backend pool.
+  - `variables.tf`: Recibe todo lo necesario para crear las VMs:
+    credenciales, subnet, cloud-init, cantidad de VMs y tags.
+
+- `/lb`:
+  - `main.tf`: Crea la IP pública, el Load Balancer, el backend pool, 
+    el health probe, la regla de balanceo y el NSG con sus reglas.
+  - `outputs.tf`: Expone public_ip para que infra/outputs.tf pueda 
+    mostrártela al final del apply.
+  - `variables.tf`: Recibe las NICs de las VMs, tu IP para SSH y 
+    los datos básicos del Resource Group.
+
+- `/vnet`:
+  - `main.tf`: Crea la Virtual Network (el edificio) y dos subnets 
+    dentro de ella: subnet-web para las VMs y subnet-mgmt para 
+    administración.
+  - `outputs.tf`: Expone subnet_web_id para que el módulo compute 
+    sepa en qué subred colocar las VMs.
+  - `variables.tf`: Recibe los datos básicos: resource group, 
+    location, prefix y tags.
+
+--
+## PARTE II
+
+### Paso 1 — Autenticación en Azure 
+
+Se inició sesión en Azure y se configuró la suscripción activa:
+
+```bash
+az login --tenant 50640584-2a40-4216-a84b-9b3ee0f3f6cf
+az account set --subscription 47ee3ece-e082-4a0a-8464-14d25467cf8e
+az account show --output table
+```
+
+**Suscripción activa:** Azure for Students  
+**Tenant ID:** `50640584-2a40-4216-a84b-9b3ee0f3f6cf`  
+**Subscription ID:** `47ee3ece-e082-4a0a-8464-14d25467cf8e`
+ 
+---
+
+### Paso 2 — Bootstrap del backend remoto 
+
+Terraform necesita guardar su "estado" (la memoria de qué recursos creó) en un lugar seguro en la nube. Se creó un **Storage Account en Azure** para este propósito.
+
+#### Problemas encontrados y soluciones
+
+| Problema | Causa | Solución |
+|----------|-------|----------|
+| `SubscriptionNotFound` al crear Storage Account | Variables de shell perdidas entre sesiones | Redefinir variables en la misma sesión |
+| `RequestDisallowedByAzure` en `eastus` y `eastus2` | Azure for Students restringe regiones | Usar `brazilsouth` |
+| `Microsoft.Storage: NotRegistered` | Proveedor de Storage no habilitado | Registrar con `az provider register` |
+
+#### Comandos ejecutados
+
+```bash
+# Definición de variables
+SUFFIX=$RANDOM
+LOCATION=brazilsouth
+RG=rg-tfstate-lab8
+STO=sttfstate${SUFFIX}
+CONTAINER=tfstate
+ 
+# Registro del proveedor de Storage (solo se hace una vez)
+az provider register --namespace Microsoft.Storage \
+  --subscription 47ee3ece-e082-4a0a-8464-14d25467cf8e
+ 
+# Crear el Resource Group
+az group create -n $RG -l eastus2
+ 
+# Crear el Storage Account
+az storage account create \
+  -g $RG \
+  -n $STO \
+  -l $LOCATION \
+  --sku Standard_LRS \
+  --encryption-services blob
+ 
+# Crear el contenedor para el state
+az storage container create \
+  --name $CONTAINER \
+  --account-name $STO
+```
+
+#### Recursos creados
+
+| Recurso | Nombre | Ubicación |
+|---------|--------|-----------|
+| Resource Group | `rg-tfstate-lab8` | `eastus2` |
+| Storage Account | `sttfstate18378` | `brazilsouth` |
+| Container | `tfstate` | — |
+
+> **Nota:** El Resource Group quedó en `eastus2` y el Storage Account en `brazilsouth`. Esto es válido — Azure permite que los recursos de un mismo Resource Group estén en distintas regiones.
+
+
+
+
+### Paso 3 — Preparación local y ajustes del código Terraform
+
+Con el backend remoto ya creado en Azure, se realizaron los siguientes ajustes en el repositorio antes de desplegar:
+
+#### 1) Reorganización del módulo `compute`
+
+Se separó la definición del módulo en tres archivos para mantener una estructura clara:
+
+- `modules/compute/main.tf`: solo recursos (NICs y VMs).
+- `modules/compute/variables.tf`: variables de entrada del módulo.
+- `modules/compute/outputs.tf`: outputs `vm_names` y `nic_ids`.
+
+Además, en `infra/main.tf` se actualizó la lectura de la llave SSH para que funcione en macOS/zsh con `~`:
+
+```terraform
+ssh_public_key = file(pathexpand(var.ssh_public_key))
+```
+
+#### 2) Ajuste de variables de entorno (`dev.tfvars`)
+
+Se dejó `infra/env/dev.tfvars` con la configuración actual del laboratorio:
+
+```terraform
+prefix              = "lab8"
+location            = "eastus"
+vm_count            = 2
+admin_username      = "student"
+ssh_public_key      = "~/.ssh/id_ed25519.pub"
+allow_ssh_from_cidr = "190.158.204.58/32"
+tags                = { owner = "santiago", course = "ARSW/BluePrints", env = "dev", expires = "2026-12-31" }
+```
+
+#### 3) Configuración de `backend.hcl`
+
+Se creó `infra/backend.hcl` a partir de `infra/backend.hcl.example` y se completó con los datos reales del backend:
+
+```hcl
+resource_group_name  = "rg-tfstate-lab8"
+storage_account_name = "sttfstate18378"
+container_name       = "tfstate"
+key                  = "lab8/terraform.tfstate"
+```
+
+Durante este paso se presentó un error `ResourceNotFound` porque el nombre del Storage Account estaba mal escrito (`sttfstate<sttfstate18378>`). Al corregirlo a `sttfstate18378`, la inicialización funcionó.
+
+#### 4) Validación inicial de Terraform
+
+Comandos ejecutados:
+
+```bash
+cd infra
+terraform fmt -recursive
+terraform init -backend=false
+terraform validate
+```
+
+Resultado:
+
+```text
+Success! The configuration is valid.
+```
+
+#### 5) Inicialización contra backend remoto
+
+Comando ejecutado:
+
+```bash
+cd infra
+terraform init -backend-config=backend.hcl
+```
+
+Resultado: backend remoto `azurerm` configurado correctamente y módulos/proveedor inicializados.
+
+#### 6) Resolución del error de llave SSH
+
+Al ejecutar `terraform plan` apareció el error:
+
+```text
+no file exists at "/Users/santiagocarmonapineda/.ssh/id_ed25519.pub"
+```
+
+Causa: la ruta era válida, pero la llave aún no existía en la máquina. Se generó la llave con:
+
+```bash
+ssh-keygen -t ed25519 -C "lab8-terraform" -f "/Users/santiagocarmonapineda/.ssh/id_ed25519" -N ""
+```
+
+También se verificó la IP pública actual para la regla SSH:
+
+```bash
+curl -s https://api4.ipify.org
+```
+
+#### 7) Plan exitoso
+
+Comando final ejecutado:
+
+```bash
+cd infra
+terraform plan -var-file=env/dev.tfvars -out plan.tfplan
+```
+
+Resultado del plan:
+
+- `Plan: 18 to add, 0 to change, 0 to destroy`
+- Se generó el archivo `plan.tfplan` correctamente.
+- Outputs previstos: `lb_public_ip`, `resource_group_name`, `vm_names`.
+
+---
+
+### Paso 4 - CI/CD con GitHub Actions (Terraform + OIDC)
+
+Se agrego el workflow `/.github/workflows/terraform.yml` con dos jobs:
+
+- `plan`: corre en cada Pull Request y ejecuta `fmt`, `init`, `validate` y `plan`.
+- `apply`: corre solo manualmente (`workflow_dispatch`) cuando el input `apply=true`.
+
+#### 1) Configuracion del workflow
+
+El pipeline usa:
+
+- `hashicorp/setup-terraform@v3`
+- `azure/login@v2` con autenticacion OIDC (sin client secret)
+- Backend remoto generado en runtime (`infra/backend.hcl`) usando variables de GitHub
+- Llave publica SSH cargada como secret para evitar depender de rutas locales en el runner
+
+#### 2) Variables y secrets requeridos en GitHub
+
+**Repository Variables** (`Settings > Secrets and variables > Actions > Variables`):
+
+- `TFSTATE_RESOURCE_GROUP` = `rg-tfstate-lab8`
+- `TFSTATE_STORAGE_ACCOUNT` = `sttfstate18378`
+- `TFSTATE_CONTAINER` = `tfstate`
+- `TFSTATE_KEY` = `lab8/terraform.tfstate`
+
+**Repository Secrets** (`Settings > Secrets and variables > Actions > Secrets`):
+
+- `AZURE_CLIENT_ID`
+- `AZURE_TENANT_ID`
+- `AZURE_SUBSCRIPTION_ID`
+- `TF_SSH_PUBLIC_KEY` (contenido completo de `~/.ssh/id_ed25519.pub`)
+
+#### 3) Flujo de uso
+
+1. Abrir un PR con cambios en `infra/` o `modules/` para disparar `Terraform Plan`.
+2. Revisar el artefacto `terraform-plan` (incluye `plan.txt`).
+3. Para desplegar, ejecutar el workflow manualmente y marcar `apply=true`.
+
+#### 4) Nota de seguridad
+
+Se recomienda proteger el environment `dev` en GitHub con aprobacion manual antes del job `apply`.
+
+---
+
+
+## Créditos y material de referencia
+- Azure, Terraform, IaC, LB y VMSS (docs oficiales) — revisa enlaces en clase.
+---
+## PARTE III
+
+**Problema de capacidad en Azure**: Al ejecutar el primer `terraform apply`, Azure rechazó la creación de las VMs con el siguiente error:
+
+> `SkuNotAvailable: The requested VM size for resource 'Following SKUs have failed for Capacity Restrictions: Standard_B2s' is currently not available in location 'eastus'.`
+
+Esto ocurre porque Azure tiene restricciones de capacidad globales en ciertos tamaños de VM. Para encontrar un tamaño disponible, se consultaron los SKUs sin restricciones en `westeurope`:
+```powershell
+az vm list-skus --location westeurope --output table --query "[?resourceType=='virtualMachines' && !restrictions]"
+```
+
+El tamaño más pequeño y económico disponible fue `Standard_D2as_v6` (2 vCPUs, 8 GB RAM), suficiente para correr nginx. Se realizaron dos cambios:
+
+En `modules/compute/main.tf`:
+```hcl
+size = "Standard_D2as_v6"
+```
+
+En `infra/env/dev.tfvars`:
+```hcl
+location = "westeurope"
+```
+
+**Verificación del balanceo de carga**: Una vez desplegada la infraestructura exitosamente, se verificó que el Load Balancer estaba distribuyendo el tráfico entre las dos VMs correctamente:
+```powershell
+1..10 | ForEach-Object { (curl http://20.229.83.105 -UseBasicParsing).Content }
+```
+
+![alt text](<img/Captura de pantalla 2026-03-25 160839.png>)
+
+Se puede observar cómo las peticiones alternan entre `lab8-vm-0` y `lab8-vm-1`, confirmando que el balanceo de carga funciona correctamente.
+
+
