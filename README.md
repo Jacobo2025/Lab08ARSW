@@ -533,3 +533,37 @@ Se recomienda proteger el environment `dev` en GitHub con aprobacion manual ante
 
 ## Créditos y material de referencia
 - Azure, Terraform, IaC, LB y VMSS (docs oficiales) — revisa enlaces en clase.
+---
+## PARTE III
+
+**Problema de capacidad en Azure**: Al ejecutar el primer `terraform apply`, Azure rechazó la creación de las VMs con el siguiente error:
+
+> `SkuNotAvailable: The requested VM size for resource 'Following SKUs have failed for Capacity Restrictions: Standard_B2s' is currently not available in location 'eastus'.`
+
+Esto ocurre porque Azure tiene restricciones de capacidad globales en ciertos tamaños de VM. Para encontrar un tamaño disponible, se consultaron los SKUs sin restricciones en `westeurope`:
+```powershell
+az vm list-skus --location westeurope --output table --query "[?resourceType=='virtualMachines' && !restrictions]"
+```
+
+El tamaño más pequeño y económico disponible fue `Standard_D2as_v6` (2 vCPUs, 8 GB RAM), suficiente para correr nginx. Se realizaron dos cambios:
+
+En `modules/compute/main.tf`:
+```hcl
+size = "Standard_D2as_v6"
+```
+
+En `infra/env/dev.tfvars`:
+```hcl
+location = "westeurope"
+```
+
+**Verificación del balanceo de carga**: Una vez desplegada la infraestructura exitosamente, se verificó que el Load Balancer estaba distribuyendo el tráfico entre las dos VMs correctamente:
+```powershell
+1..10 | ForEach-Object { (curl http://20.229.83.105 -UseBasicParsing).Content }
+```
+
+![alt text](<img/Captura de pantalla 2026-03-25 160839.png>)
+
+Se puede observar cómo las peticiones alternan entre `lab8-vm-0` y `lab8-vm-1`, confirmando que el balanceo de carga funciona correctamente.
+
+
