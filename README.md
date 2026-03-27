@@ -484,8 +484,55 @@ Resultado del plan:
 - Se generó el archivo `plan.tfplan` correctamente.
 - Outputs previstos: `lb_public_ip`, `resource_group_name`, `vm_names`.
 
+---
+
+### Paso 4 - CI/CD con GitHub Actions (Terraform + OIDC)
+
+Se agrego el workflow `/.github/workflows/terraform.yml` con dos jobs:
+
+- `plan`: corre en cada Pull Request y ejecuta `fmt`, `init`, `validate` y `plan`.
+- `apply`: corre solo manualmente (`workflow_dispatch`) cuando el input `apply=true`.
+
+#### 1) Configuracion del workflow
+
+El pipeline usa:
+
+- `hashicorp/setup-terraform@v3`
+- `azure/login@v2` con autenticacion OIDC (sin client secret)
+- Backend remoto generado en runtime (`infra/backend.hcl`) usando variables de GitHub
+- Llave publica SSH cargada como secret para evitar depender de rutas locales en el runner
+
+#### 2) Variables y secrets requeridos en GitHub
+
+**Repository Variables** (`Settings > Secrets and variables > Actions > Variables`):
+
+- `TFSTATE_RESOURCE_GROUP` = `rg-tfstate-lab8`
+- `TFSTATE_STORAGE_ACCOUNT` = `sttfstate18378`
+- `TFSTATE_CONTAINER` = `tfstate`
+- `TFSTATE_KEY` = `lab8/terraform.tfstate`
+
+**Repository Secrets** (`Settings > Secrets and variables > Actions > Secrets`):
+
+- `AZURE_CLIENT_ID`
+- `AZURE_TENANT_ID`
+- `AZURE_SUBSCRIPTION_ID`
+- `TF_SSH_PUBLIC_KEY` (contenido completo de `~/.ssh/id_ed25519.pub`)
+
+#### 3) Flujo de uso
+
+1. Abrir un PR con cambios en `infra/` o `modules/` para disparar `Terraform Plan`.
+2. Revisar el artefacto `terraform-plan` (incluye `plan.txt`).
+3. Para desplegar, ejecutar el workflow manualmente y marcar `apply=true`.
+
+#### 4) Nota de seguridad
+
+Se recomienda proteger el environment `dev` en GitHub con aprobacion manual antes del job `apply`.
+
+---
 
 
+## Créditos y material de referencia
+- Azure, Terraform, IaC, LB y VMSS (docs oficiales) — revisa enlaces en clase.
 ---
 ## PARTE III
 
